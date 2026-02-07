@@ -21,8 +21,10 @@ let uploadedFiles = [];
 
 // MVSEP STATE
 const MVSEP_API_URL = 'https://mvsep.com/api/v1';
-// PUBLIC PROXY: Needed for GitHub Pages to bypass CORS
-const CORS_PROXY = 'https://corsproxy.io/?url='; 
+
+// PROXY CONFIG
+// We use cors-anywhere because corsproxy.io often fails with POST File Uploads (403/Empty Body)
+const CORS_PROXY = 'https://cors-anywhere.herokuapp.com/'; 
 
 let mvsepToken = localStorage.getItem('mvsep_token') || '';
 
@@ -533,7 +535,11 @@ mvsepCancelBtn.onclick = () => {
 function logMvsep(msg, type='info') {
     const entry = document.createElement('div');
     entry.className = `log-entry ${type}`;
-    entry.innerText = `> ${msg}`;
+    if (type === 'html') {
+        entry.innerHTML = `> ${msg}`;
+    } else {
+        entry.innerText = `> ${msg}`;
+    }
     mvsepLog.appendChild(entry);
     mvsepLog.scrollTop = mvsepLog.scrollHeight;
 }
@@ -543,14 +549,13 @@ async function startMvsepWorkflow(file) {
     mvsepFileBtn.disabled = true;
     try {
         logMvsep("Starting Separation Workflow...", "info");
-        logMvsep("Note: Using Public Proxy for CORS...", "info");
         
         // STAGE 1: ENSEMBLE (Model 28, Option 1)
         logMvsep("Stage 1/2: Uploading to Ensemble (Model 28)...");
         mvsepProgress.style.width = '10%';
         
         const ensembleHash = await uploadToMvsep(file, 28, 1);
-        if (!ensembleHash) throw new Error("Upload failed");
+        if (!ensembleHash) throw new Error("Upload failed. Check logs.");
         
         logMvsep(`Task created: ${ensembleHash}. Processing...`);
         mvsepProgress.style.width = '20%';
@@ -657,7 +662,7 @@ async function startMvsepWorkflow(file) {
     }
 }
 
-// API HELPERS with PROXY
+// API HELPERS with ROBUST ERROR HANDLING
 async function uploadToMvsep(file, sepType, modelOpt) {
     const formData = new FormData();
     formData.append('api_token', mvsepToken);
@@ -666,19 +671,36 @@ async function uploadToMvsep(file, sepType, modelOpt) {
     formData.append('model_opt', modelOpt);
     formData.append('is_demo', '0');
 
+    // Encode the target URL to ensure special chars don't break the proxy path
     const targetUrl = `${MVSEP_API_URL}/separator/create`;
-    // Bypass CORS by prepending the proxy
+    // We just append the full URL. cors-anywhere handles it.
     const proxyUrl = CORS_PROXY + targetUrl;
 
+    // NOTE: Do NOT set Content-Type header. Fetch does it automatically with boundary for FormData.
     const res = await fetch(proxyUrl, {
         method: 'POST',
+        headers: {
+            'X-Requested-With': 'XMLHttpRequest' // Required by cors-anywhere
+        },
         body: formData
     });
     
+    // DETECT PROXY LOCK (403 Forbidden)
+    if (res.status === 403) {
+        logMvsep(`PROXY LOCKED! <a href="https://cors-anywhere.herokuapp.com/corsdemo" target="_blank" style="color:#fff; text-decoration:underline;">CLICK HERE TO UNLOCK</a>`, 'html');
+        throw new Error("Proxy Locked - See log");
+    }
+
+    // Check for Text/HTML (Error) response instead of JSON
+    const contentType = res.headers.get("content-type");
+    if (contentType && contentType.indexOf("application/json") === -1) {
+        const text = await res.text();
+        console.error("Non-JSON Response:", text);
+        throw new Error("Server returned non-JSON error. See console.");
+    }
+
     const data = await res.json();
     if (data.success) return data.data.hash;
-    
-    // Sometimes the proxy returns the JSON but the API said failure
     throw new Error(data.message || "API Error");
 }
 
@@ -687,10 +709,19 @@ async function pollMvsepTask(hash) {
         const interval = setInterval(async () => {
             try {
                 const targetUrl = `${MVSEP_API_URL}/separator/get?hash=${hash}`;
-                // Bypass CORS for polling too
                 const proxyUrl = CORS_PROXY + targetUrl;
 
-                const res = await fetch(proxyUrl);
+                const res = await fetch(proxyUrl, {
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' }
+                });
+                
+                if (res.status === 403) {
+                     clearInterval(interval);
+                     logMvsep(`PROXY LOCKED! <a href="https://cors-anywhere.herokuapp.com/corsdemo" target="_blank" style="color:#fff; text-decoration:underline;">CLICK HERE TO UNLOCK</a>`, 'html');
+                     reject(new Error("Proxy Locked"));
+                     return;
+                }
+
                 const data = await res.json();
                 
                 if (data.success) {
@@ -711,16 +742,18 @@ async function pollMvsepTask(hash) {
                 clearInterval(interval);
                 reject(e);
             }
-        }, 4000); // Check every 4s (polite polling)
+        }, 4000); 
     });
 }
 
 async function downloadUrlToBlob(url) {
-    // URL typically comes as http://... from API, we need to proxy it
-    // Ensure we encode it if the proxy requires it, but usually simple append works for this proxy
+    // Some proxies don't support binary well. 
+    // Usually MVSEP download links are simple GETs.
     const proxyUrl = CORS_PROXY + url;
     
-    const res = await fetch(proxyUrl);
+    const res = await fetch(proxyUrl, {
+        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    });
     if (!res.ok) throw new Error("Download failed");
     return await res.blob();
 }
@@ -1260,5 +1293,4 @@ document.getElementById('layoutBtn').onclick = () => {
 
 // Initial Setup
 renderMixer([]);
-
 recFormatSelect.onchange();
