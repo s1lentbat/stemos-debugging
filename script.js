@@ -22,9 +22,8 @@ let uploadedFiles = [];
 // MVSEP STATE
 const MVSEP_API_URL = 'https://mvsep.com/api/v1';
 
-// PROXY CONFIG
-// We use cors-anywhere because corsproxy.io often fails with POST File Uploads (403/Empty Body)
-const CORS_PROXY = 'https://cors-anywhere.herokuapp.com/'; 
+// --- CLOUDFLARE WORKER PROXY SETTINGS ---
+const PROXY_HOST = 'https://fiefie.worpcapsule.workers.dev'; 
 
 let mvsepToken = localStorage.getItem('mvsep_token') || '';
 
@@ -550,6 +549,10 @@ async function startMvsepWorkflow(file) {
     try {
         logMvsep("Starting Separation Workflow...", "info");
         
+        if (PROXY_HOST.includes("YOUR_NAME")) {
+             throw new Error("PROXY NOT CONFIGURED! Edit script.js Line 24.");
+        }
+
         // STAGE 1: ENSEMBLE (Model 28, Option 1)
         logMvsep("Stage 1/2: Uploading to Ensemble (Model 28)...");
         mvsepProgress.style.width = '10%';
@@ -662,7 +665,7 @@ async function startMvsepWorkflow(file) {
     }
 }
 
-// API HELPERS with ROBUST ERROR HANDLING
+// API HELPERS USING CLOUDFLARE WORKER
 async function uploadToMvsep(file, sepType, modelOpt) {
     const formData = new FormData();
     formData.append('api_token', mvsepToken);
@@ -671,34 +674,16 @@ async function uploadToMvsep(file, sepType, modelOpt) {
     formData.append('model_opt', modelOpt);
     formData.append('is_demo', '0');
 
-    // Encode the target URL to ensure special chars don't break the proxy path
-    const targetUrl = `${MVSEP_API_URL}/separator/create`;
-    // We just append the full URL. cors-anywhere handles it.
-    const proxyUrl = CORS_PROXY + targetUrl;
+    // Use our Worker Proxy
+    const proxyUrl = `${PROXY_HOST}/separator/create`;
 
-    // NOTE: Do NOT set Content-Type header. Fetch does it automatically with boundary for FormData.
+    // Fetch via Worker (it handles CORS and Forwarding)
     const res = await fetch(proxyUrl, {
         method: 'POST',
-        headers: {
-            'X-Requested-With': 'XMLHttpRequest' // Required by cors-anywhere
-        },
         body: formData
     });
     
-    // DETECT PROXY LOCK (403 Forbidden)
-    if (res.status === 403) {
-        logMvsep(`PROXY LOCKED! <a href="https://cors-anywhere.herokuapp.com/corsdemo" target="_blank" style="color:#fff; text-decoration:underline;">CLICK HERE TO UNLOCK</a>`, 'html');
-        throw new Error("Proxy Locked - See log");
-    }
-
-    // Check for Text/HTML (Error) response instead of JSON
-    const contentType = res.headers.get("content-type");
-    if (contentType && contentType.indexOf("application/json") === -1) {
-        const text = await res.text();
-        console.error("Non-JSON Response:", text);
-        throw new Error("Server returned non-JSON error. See console.");
-    }
-
+    // Cloudflare Workers return JSON nicely if configured right
     const data = await res.json();
     if (data.success) return data.data.hash;
     throw new Error(data.message || "API Error");
@@ -708,20 +693,10 @@ async function pollMvsepTask(hash) {
     return new Promise((resolve, reject) => {
         const interval = setInterval(async () => {
             try {
-                const targetUrl = `${MVSEP_API_URL}/separator/get?hash=${hash}`;
-                const proxyUrl = CORS_PROXY + targetUrl;
-
-                const res = await fetch(proxyUrl, {
-                    headers: { 'X-Requested-With': 'XMLHttpRequest' }
-                });
+                // Use our Worker Proxy
+                const proxyUrl = `${PROXY_HOST}/separator/get?hash=${hash}`;
                 
-                if (res.status === 403) {
-                     clearInterval(interval);
-                     logMvsep(`PROXY LOCKED! <a href="https://cors-anywhere.herokuapp.com/corsdemo" target="_blank" style="color:#fff; text-decoration:underline;">CLICK HERE TO UNLOCK</a>`, 'html');
-                     reject(new Error("Proxy Locked"));
-                     return;
-                }
-
+                const res = await fetch(proxyUrl);
                 const data = await res.json();
                 
                 if (data.success) {
@@ -747,13 +722,13 @@ async function pollMvsepTask(hash) {
 }
 
 async function downloadUrlToBlob(url) {
-    // Some proxies don't support binary well. 
-    // Usually MVSEP download links are simple GETs.
-    const proxyUrl = CORS_PROXY + url;
+    // For downloads (GET), we can use a Public Proxy to save our Worker bandwidth/CPU.
+    // 'corsproxy.io' handles GET requests reasonably well.
+    const publicProxy = 'https://corsproxy.io/?';
     
-    const res = await fetch(proxyUrl, {
-        headers: { 'X-Requested-With': 'XMLHttpRequest' }
-    });
+    // We append the full MVSEP url to the proxy
+    const res = await fetch(publicProxy + encodeURIComponent(url));
+    
     if (!res.ok) throw new Error("Download failed");
     return await res.blob();
 }
