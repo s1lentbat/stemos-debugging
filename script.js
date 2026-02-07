@@ -22,7 +22,7 @@ let uploadedFiles = [];
 // MVSEP STATE
 const MVSEP_API_URL = 'https://mvsep.com/api/v1';
 // PUBLIC PROXY: Needed for GitHub Pages to bypass CORS
-const CORS_PROXY = 'https://corsproxy.io/?'; 
+const CORS_PROXY = 'https://corsproxy.io/?url='; 
 
 let mvsepToken = localStorage.getItem('mvsep_token') || '';
 
@@ -1260,4 +1260,5 @@ document.getElementById('layoutBtn').onclick = () => {
 
 // Initial Setup
 renderMixer([]);
+
 recFormatSelect.onchange();
